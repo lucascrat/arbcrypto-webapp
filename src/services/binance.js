@@ -1,5 +1,9 @@
 import { APP_CONFIG } from '../constants/config';
 import CryptoJS from 'crypto-js';
+import { Platform } from 'react-native';
+
+// Proxy backend para resolver CORS no webapp
+const PROXY_URL = 'https://b8s0448gcoc0gg84w08gsgco.187.77.230.251.sslip.io/binance/proxy';
 
 class BinanceService {
     constructor() {
@@ -90,7 +94,24 @@ class BinanceService {
 
         try {
             console.log(`[Binance] ${type} Request: ${method} ${endpoint}`);
-            const response = await fetch(url, options);
+
+            let response;
+            if (Platform.OS === 'web') {
+                // No web usa proxy para evitar CORS
+                response = await fetch(PROXY_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url,
+                        method,
+                        headers: options.headers,
+                        body: options.body,
+                    }),
+                });
+            } else {
+                response = await fetch(url, options);
+            }
+
             const result = await response.json();
 
             if (!response.ok) {
@@ -121,7 +142,17 @@ class BinanceService {
         const url = `${baseUrl}${endpoint}${queryString ? '?' + queryString : ''}`;
 
         try {
-            const response = await fetch(url);
+            let response;
+            if (Platform.OS === 'web') {
+                response = await fetch(PROXY_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, method: 'GET', headers: {} }),
+                });
+            } else {
+                response = await fetch(url);
+            }
+
             const result = await response.json();
 
             if (!response.ok) {
