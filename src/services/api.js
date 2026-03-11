@@ -3,7 +3,7 @@ import { secureStorage } from '../utils/secureStorage';
 import { Platform } from 'react-native';
 
 // Backend no Coolify (sempre disponível para web e mobile)
-const COOLIFY_BACKEND_URL = 'http://b8s0448gcoc0gg84w08gsgco.187.77.230.251.sslip.io';
+const COOLIFY_BACKEND_URL = 'https://b8s0448gcoc0gg84w08gsgco.187.77.230.251.sslip.io';
 
 const getBaseUrl = () => {
     const configUrl = Constants.expoConfig?.extra?.API_URL;
