@@ -16,7 +16,7 @@ import { RISK_LEVELS } from '../constants/config';
 import { useAppStore } from '../store/useAppStore';
 import { GlassCard, PrimaryButton, SecondaryButton, Badge, Divider } from '../components/UI';
 import { maskApiKey } from '../utils/helpers';
-import { scale, moderateScale, RFValue } from '../utils/responsive';
+import { scale, moderateScale, RFValue, isWeb, isDesktop, WEB_MAX_WIDTH, WEB_CARD_MAX_WIDTH } from '../utils/responsive';
 import { showAlert } from '../utils/alert';
 import { secureCredentialsService } from '../services/secureCredentials';
 
@@ -477,8 +477,11 @@ const styles = StyleSheet.create({
         flex: 1,
     },
     content: {
-        padding: SPACING.md,
+        padding: isDesktop ? SPACING.xl : SPACING.md,
         paddingTop: SPACING.xxl,
+        maxWidth: isWeb ? WEB_CARD_MAX_WIDTH : undefined,
+        alignSelf: isWeb ? 'center' : undefined,
+        width: '100%',
     },
     title: {
         color: COLORS.textPrimary,
@@ -678,7 +681,7 @@ const styles = StyleSheet.create({
         gap: SPACING.md,
     },
     infoItem: {
-        width: '45%',
+        width: isDesktop ? '30%' : '45%',
     },
     infoLabel: {
         color: COLORS.textSecondary,

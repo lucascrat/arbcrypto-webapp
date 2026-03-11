@@ -16,6 +16,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../store/useAppStore';
 import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, FONT_WEIGHTS } from '../constants/theme';
+import { isWeb, isDesktop, isTablet, WEB_MAX_WIDTH } from '../utils/responsive';
 
 const { width } = Dimensions.get('window');
 
@@ -537,6 +538,7 @@ export default function HomeScreen({ navigation }) {
                     }
                     showsVerticalScrollIndicator={false}
                 >
+                    <View style={styles.webContainer}>
                     {renderHeader()}
                     {renderErrorBanner()}
                     {renderConnectionBanner()}
@@ -550,6 +552,7 @@ export default function HomeScreen({ navigation }) {
                     {activeTab === 'history' && renderTradeHistory()}
 
                     <View style={{ height: 100 }} />
+                    </View>
                 </ScrollView>
             </View>
         );
@@ -576,8 +579,14 @@ const styles = StyleSheet.create({
         flex: 1,
     },
     scrollContent: {
-        paddingHorizontal: SPACING.md,
+        paddingHorizontal: isDesktop ? SPACING.xxl : SPACING.md,
         paddingTop: SPACING.xl + 20,
+        alignItems: isDesktop ? 'center' : undefined,
+    },
+    webContainer: {
+        width: '100%',
+        maxWidth: isWeb ? WEB_MAX_WIDTH : '100%',
+        alignSelf: 'center',
     },
 
     // Header

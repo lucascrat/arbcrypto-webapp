@@ -9,12 +9,14 @@ import {
     Platform,
     ActivityIndicator,
     Image,
+    ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { useAppStore } from '../store/useAppStore';
 import { GlassCard } from '../components/UI';
 import { showAlert } from '../utils/alert';
+import { isWeb, isDesktop, WEB_FORM_MAX_WIDTH } from '../utils/responsive';
 
 export default function LoginScreen({ navigation }) {
     const { signIn, authLoading } = useAppStore();
@@ -47,6 +49,11 @@ export default function LoginScreen({ navigation }) {
                 behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                 style={styles.keyboardView}
             >
+                <ScrollView
+                    contentContainerStyle={styles.scrollContent}
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                >
                 <View style={styles.content}>
                     {/* Logo/Title */}
                     <View style={styles.header}>
@@ -148,6 +155,7 @@ export default function LoginScreen({ navigation }) {
                         </Text>
                     </View>
                 </View>
+                </ScrollView>
             </KeyboardAvoidingView>
         </View>
     );
@@ -164,9 +172,16 @@ const styles = StyleSheet.create({
     keyboardView: {
         flex: 1,
     },
+    scrollContent: {
+        flexGrow: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingVertical: SPACING.xl,
+        paddingHorizontal: SPACING.lg,
+    },
     content: {
-        flex: 1,
-        padding: SPACING.lg,
+        width: '100%',
+        maxWidth: isWeb && isDesktop ? WEB_FORM_MAX_WIDTH : '100%',
         justifyContent: 'center',
     },
     header: {
@@ -174,13 +189,13 @@ const styles = StyleSheet.create({
         marginBottom: SPACING.xxl,
     },
     logoImage: {
-        width: 100,
-        height: 100,
+        width: isDesktop ? 120 : 100,
+        height: isDesktop ? 120 : 100,
         marginBottom: SPACING.sm,
     },
     title: {
         color: COLORS.textPrimary,
-        fontSize: FONT_SIZES.xxxl,
+        fontSize: isDesktop ? 36 : FONT_SIZES.xxxl,
         fontWeight: '800',
         marginBottom: SPACING.xs,
     },
@@ -189,7 +204,7 @@ const styles = StyleSheet.create({
         fontSize: FONT_SIZES.md,
     },
     formCard: {
-        padding: SPACING.xl,
+        padding: isDesktop ? SPACING.xxl : SPACING.xl,
     },
     formTitle: {
         color: COLORS.textPrimary,
