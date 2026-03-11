@@ -2,14 +2,18 @@ import Constants from 'expo-constants';
 import { secureStorage } from '../utils/secureStorage';
 import { Platform } from 'react-native';
 
+// Backend no Coolify (sempre disponível para web e mobile)
+const COOLIFY_BACKEND_URL = 'http://b8s0448gcoc0gg84w08gsgco.187.77.230.251.sslip.io';
+
 const getBaseUrl = () => {
     const configUrl = Constants.expoConfig?.extra?.API_URL;
+    if (configUrl) return configUrl;
     if (Platform.OS === 'web') {
-        // On web, use the current hostname with API port so it works in any environment
-        const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-        return `http://${hostname}:3000`;
+        // Web sempre usa o backend do Coolify
+        return COOLIFY_BACKEND_URL;
     }
-    return configUrl || 'http://localhost:3000';
+    // Mobile local dev fallback
+    return 'http://localhost:3000';
 };
 
 const BASE_URL = getBaseUrl();
