@@ -28,10 +28,19 @@ export const APP_CONFIG = {
 
     // Trading Configuration
     trading: {
-        defaultSymbols: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT'],
+        defaultSymbols: [
+            // Tier 1 — Top market cap
+            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT',
+            // Tier 2 — High volume altcoins
+            'DOGEUSDT', 'AVAXUSDT', 'DOTUSDT', 'MATICUSDT', 'LINKUSDT', 'LTCUSDT',
+            // Tier 3 — Volatile / trending
+            'ARBUSDT', 'OPUSDT', 'APTUSDT', 'SUIUSDT', 'NEARUSDT', 'FILUSDT',
+            // Tier 4 — DeFi / Meme with volume
+            'UNIUSDT', 'AAVEUSDT', 'PEPEUSDT', 'WIFUSDT', 'SHIBUSDT', 'TRXUSDT',
+        ],
         defaultTimeframe: '15m',
-        botIntervalMs: 45000,     // 45 seconds per cycle (was 2 min)
-        maxTradesPerHour: 10,
+        botIntervalMs: 60000,     // 60 seconds per cycle (24 pairs need more time)
+        maxTradesPerHour: 20,
         minProfitPercent: 0.5,
         stopLossPercent: 2.0,
         takeProfitPercent: 3.5,
