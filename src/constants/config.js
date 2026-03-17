@@ -72,38 +72,61 @@ export const APP_CONFIG = {
 export const RISK_LEVELS = {
     low: {
         label: 'Conservador',
-        maxTradePercent: 30,       // % of capital per trade (30% de $25 = $7.5)
-        riskPercent: 1.0,          // % of account to risk per trade (for ATR sizing)
+        maxTradePercent: 30,
+        riskPercent: 1.0,
+        // ATR-based dynamic SL/TP (replaces fixed %)
+        slAtrMultiplier: 1.5,      // SL = ATR × 1.5
+        tpAtrMultiplier: 3.0,      // TP = ATR × 3.0
+        tp1AtrMultiplier: 2.0,     // Partial TP1 = ATR × 2.0 (close 50%)
+        trailingAtrMultiplier: 1.0, // Trailing = ATR × 1.0
+        breakEvenAtrThreshold: 1.0, // Move SL to entry when profit > ATR × 1.0
+        // Fallback fixed % (used if ATR unavailable)
         stopLossPercent: 1.5,
         takeProfitPercent: 3.0,
         trailingStopPercent: 1.0,
         maxLeverage: 2,
         minConfidence: 80,
-        minOrderUsdt: 6,           // Mínimo por ordem em USDT (Binance exige ~5 USDT)
+        minOrderUsdt: 6,
+        maxConcurrentPositions: 2,
+        dailyLossPercent: 3,       // Max 3% daily loss (% of balance)
         description: 'Trades apenas com alta confiança. Ideal para capital pequeno.',
     },
     medium: {
         label: 'Moderado',
-        maxTradePercent: 40,       // 40% de $25 = $10
+        maxTradePercent: 40,
         riskPercent: 2.0,
+        slAtrMultiplier: 2.0,
+        tpAtrMultiplier: 3.5,
+        tp1AtrMultiplier: 2.0,
+        trailingAtrMultiplier: 1.5,
+        breakEvenAtrThreshold: 1.0,
         stopLossPercent: 2.0,
         takeProfitPercent: 3.5,
         trailingStopPercent: 1.5,
         maxLeverage: 3,
         minConfidence: 70,
         minOrderUsdt: 6,
+        maxConcurrentPositions: 3,
+        dailyLossPercent: 4,
         description: 'Balanceado entre risco e retorno.',
     },
     high: {
         label: 'Agressivo',
-        maxTradePercent: 60,       // 60% de $25 = $15
+        maxTradePercent: 60,
         riskPercent: 3.0,
+        slAtrMultiplier: 2.5,
+        tpAtrMultiplier: 4.0,
+        tp1AtrMultiplier: 2.5,
+        trailingAtrMultiplier: 2.0,
+        breakEvenAtrThreshold: 1.0,
         stopLossPercent: 3.0,
         takeProfitPercent: 5.0,
         trailingStopPercent: 2.0,
         maxLeverage: 5,
         minConfidence: 60,
         minOrderUsdt: 6,
+        maxConcurrentPositions: 3,
+        dailyLossPercent: 5,
         description: 'Mais operações, maior risco. Trailing stop ativo.',
     },
 };

@@ -58,7 +58,7 @@ class GeminiService {
         ]);
         const fearGreed = marketIntelligence.getFearAndGreedProxy(marketData.rsi);
 
-        const { fundingRate, orderbookRatio, recentStats } = extraData;
+        const { fundingRate, orderbookRatio, recentStats, higherTimeframeBias, divergences } = extraData;
 
         // 2. Build Expert Prompt — action field MUST be LONG | SHORT | HOLD
         const systemPrompt = `You are an ELITE AI Crypto Quantitative Trader with expertise in Al Brooks Price Action methodology combined with quantitative analysis.
@@ -79,10 +79,22 @@ PRICE ACTION RULES (Al Brooks — highest priority):
 - Always-In Bias = 'SHORT': Market structure favors bears. Prefer SHORT setups.
 - Buying Pressure 7+/10: Strong buying — bullish. Selling Pressure 7+/10: Strong selling — bearish.
 
+MULTI-TIMEFRAME FILTER (CRITICAL — higher priority than 15m signals):
+- Higher Timeframe (1h) Bias is provided. If it CONTRADICTS your 15m action, REDUCE confidence by 15 points.
+- Example: If 1h bias = "bearish" but 15m shows LONG → lower confidence by 15. If still above threshold, proceed with caution.
+- If 1h bias CONFIRMS your action (e.g., 1h bullish + 15m LONG), ADD 5 confidence points.
+- Neutral 1h bias: no adjustment.
+
+DIVERGENCE FILTER (reversal warning):
+- If RSI BEARISH divergence detected: Avoid LONG. Price made Higher High but RSI made Lower High → reversal risk.
+- If RSI BULLISH divergence detected: Avoid SHORT. Price made Lower Low but RSI made Higher Low → bounce likely.
+- If MACD divergence confirms RSI divergence: STRONG reversal signal → reduce confidence by 20 points.
+- Divergence overrides PA signals in conflicting cases.
+
 CRITICAL TRADING RULES:
-- LONG: Bullish market phase + buying pressure + H1/H2 setup or strong breakout bull + positive macro.
-- SHORT: Bearish market phase + selling pressure + L1/L2 setup or strong breakout bear (FUTURES only).
-- HOLD: Barb wire active, trading range without clear edge, confidence < ${extraData.minConfidence || 70}%, contradictory signals.
+- LONG: Bullish market phase + buying pressure + H1/H2 setup or strong breakout bull + positive macro + NO bearish divergence + 1h not bearish.
+- SHORT: Bearish market phase + selling pressure + L1/L2 setup or strong breakout bear (FUTURES only) + NO bullish divergence + 1h not bullish.
+- HOLD: Barb wire active, trading range without clear edge, confidence < ${extraData.minConfidence || 70}%, contradictory signals, divergence against direction.
 - SPOT only supports LONG. FUTURES supports LONG or SHORT.
 - Minimum risk/reward: 2:1 (Al Brooks core rule — swing must offer at least 2x the risk).
 
@@ -139,7 +151,17 @@ RESPONSE: Return JSON ONLY, no markdown, no explanation outside JSON.
     pa.climaxSell && 'Climax Sell (too far down → exhaustion → LONG opp)',
 ].filter(Boolean).join(', ') || 'none'}
 - Breakout: ${pa.breakoutStrength?.toUpperCase()} ${pa.breakoutDirection !== 'NEUTRAL' ? pa.breakoutDirection : ''}
-- ⚠️ Barb Wire (avoid): ${pa.barbWire ? 'YES — overlapping doji bars, HOLD recommended' : 'No'}` : '';
+- Barb Wire (avoid): ${pa.barbWire ? 'YES — overlapping doji bars, HOLD recommended' : 'No'}` : '';
+
+        // Multi-timeframe context
+        const htfCtx = higherTimeframeBias
+            ? `\n🕐 **HIGHER TIMEFRAME (1h)**: Bias = ${higherTimeframeBias.toUpperCase()} (EMA9 vs EMA21 on 1h candles)`
+            : '';
+
+        // Divergence context
+        const divCtx = divergences && (divergences.rsiDivergence !== 'none' || divergences.macdDivergence !== 'none')
+            ? `\n⚠️ **DIVERGENCES DETECTED**:${divergences.rsiDivergence !== 'none' ? ` RSI ${divergences.rsiDivergence.toUpperCase()} divergence` : ''}${divergences.macdDivergence !== 'none' ? ` | MACD ${divergences.macdDivergence.toUpperCase()} divergence` : ''}`
+            : '';
 
         const prompt = `
 📊 **MARKET DATA FOR ${marketData.symbol}** (Venue hint: ${venue}):
@@ -156,7 +178,7 @@ Price: $${marketData.currentPrice} (${marketData.priceChange24h?.toFixed(2)}% in
 - EMA9 vs EMA21: ${(marketData.ema9 || 0) > (marketData.ema21 || 0) ? 'Bullish (EMA9 > EMA21)' : 'Bearish (EMA9 < EMA21)'}
 - ADX: ${marketData.adx?.adx?.toFixed(1)} — Trend: ${marketData.adx?.trend?.toUpperCase()} (${marketData.adx?.strength})
 - Volume: ${marketData.volume?.ratio?.toFixed(2)}x vs 20-period average
-- ATR(14): ${marketData.atr?.toFixed(4) || 'N/A'}${fundingCtx}${orderbookCtx}
+- ATR(14): ${marketData.atr?.toFixed(4) || 'N/A'}${fundingCtx}${orderbookCtx}${htfCtx}${divCtx}
 ${paCtx}
 🌍 **MACRO / FLOWS**:
 - Global Status: ${flowData.status?.toUpperCase()} (${flowData.description})

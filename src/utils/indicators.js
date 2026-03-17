@@ -600,6 +600,124 @@ function _paTrendStrength(bars) {
     return n > 0.65 ? 'strong' : n > 0.35 ? 'moderate' : 'weak';
 }
 
+// =============================================================================
+// DIVERGENCE DETECTOR — RSI/MACD vs Price
+// Bearish: Price makes Higher High but RSI/MACD makes Lower High → reversal warning
+// Bullish: Price makes Lower Low but RSI/MACD makes Higher Low → reversal warning
+// =============================================================================
+export function detectDivergences(closes, lookback = 20) {
+    if (!closes || closes.length < lookback + 15) return { rsiDivergence: 'none', macdDivergence: 'none' };
+
+    const recentCloses = closes.slice(-lookback - 15);
+
+    // Build full RSI array
+    const rsiArray = _buildRSIArray(recentCloses, 14);
+    // Build MACD histogram array
+    const macdArray = _buildMACDHistogramArray(recentCloses);
+
+    const priceSlice = recentCloses.slice(-lookback);
+    const rsiSlice = rsiArray.slice(-lookback);
+    const macdSlice = macdArray.slice(-lookback);
+
+    // Find swing highs and lows in price
+    const swingHighs = _findSwings(priceSlice, 'high');
+    const swingLows = _findSwings(priceSlice, 'low');
+
+    let rsiDivergence = 'none';
+    let macdDivergence = 'none';
+
+    // Check bearish divergence (price HH + indicator LH)
+    if (swingHighs.length >= 2) {
+        const [prev, curr] = swingHighs.slice(-2);
+        if (priceSlice[curr] > priceSlice[prev]) {
+            if (rsiSlice[curr] < rsiSlice[prev] - 2) rsiDivergence = 'bearish';
+            if (macdSlice.length > curr && macdSlice.length > prev && macdSlice[curr] < macdSlice[prev]) macdDivergence = 'bearish';
+        }
+    }
+
+    // Check bullish divergence (price LL + indicator HL)
+    if (swingLows.length >= 2) {
+        const [prev, curr] = swingLows.slice(-2);
+        if (priceSlice[curr] < priceSlice[prev]) {
+            if (rsiSlice[curr] > rsiSlice[prev] + 2) rsiDivergence = 'bullish';
+            if (macdSlice.length > curr && macdSlice.length > prev && macdSlice[curr] > macdSlice[prev]) macdDivergence = 'bullish';
+        }
+    }
+
+    return { rsiDivergence, macdDivergence };
+}
+
+function _findSwings(data, type) {
+    const swings = [];
+    for (let i = 2; i < data.length - 2; i++) {
+        if (type === 'high') {
+            if (data[i] > data[i - 1] && data[i] > data[i - 2] && data[i] > data[i + 1] && data[i] > data[i + 2]) {
+                swings.push(i);
+            }
+        } else {
+            if (data[i] < data[i - 1] && data[i] < data[i - 2] && data[i] < data[i + 1] && data[i] < data[i + 2]) {
+                swings.push(i);
+            }
+        }
+    }
+    return swings;
+}
+
+function _buildRSIArray(closes, period = 14) {
+    const changes = [];
+    for (let i = 1; i < closes.length; i++) changes.push(closes[i] - closes[i - 1]);
+
+    const rsiValues = [];
+    let avgGain = 0, avgLoss = 0;
+    for (let i = 0; i < period; i++) {
+        avgGain += changes[i] > 0 ? changes[i] : 0;
+        avgLoss += changes[i] < 0 ? Math.abs(changes[i]) : 0;
+    }
+    avgGain /= period;
+    avgLoss /= period;
+    rsiValues.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
+
+    for (let i = period; i < changes.length; i++) {
+        const gain = changes[i] > 0 ? changes[i] : 0;
+        const loss = changes[i] < 0 ? Math.abs(changes[i]) : 0;
+        avgGain = (avgGain * (period - 1) + gain) / period;
+        avgLoss = (avgLoss * (period - 1) + loss) / period;
+        rsiValues.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
+    }
+    return rsiValues;
+}
+
+function _buildMACDHistogramArray(closes) {
+    const fastEMA = calculateEMAArray(closes, 12);
+    const slowEMA = calculateEMAArray(closes, 26);
+    const macdLine = [];
+    for (let i = 0; i < slowEMA.length; i++) {
+        const fastIdx = i + (fastEMA.length - slowEMA.length);
+        if (fastIdx >= 0) macdLine.push(fastEMA[fastIdx] - slowEMA[i]);
+    }
+    const signalLine = calculateEMAArray(macdLine, 9);
+    const histogram = [];
+    for (let i = 0; i < signalLine.length; i++) {
+        const macdIdx = i + (macdLine.length - signalLine.length);
+        histogram.push(macdLine[macdIdx] - signalLine[i]);
+    }
+    return histogram;
+}
+
+// Calculate higher timeframe bias (for multi-timeframe confirmation)
+export function calculateHigherTimeframeBias(klines1h) {
+    if (!klines1h || klines1h.length < 25) return 'neutral';
+    const closes = klines1h.map(k => k.close);
+    const ema9 = calculateEMA(closes, 9);
+    const ema21 = calculateEMA(closes, 21);
+    if (ema9 === null || ema21 === null) return 'neutral';
+
+    const diff = ((ema9 - ema21) / ema21) * 100;
+    if (diff > 0.1) return 'bullish';
+    if (diff < -0.1) return 'bearish';
+    return 'neutral';
+}
+
 // Calculate support and resistance levels
 export function calculateSupportResistance(klines, lookback = 20) {
     const recentKlines = klines.slice(-lookback);

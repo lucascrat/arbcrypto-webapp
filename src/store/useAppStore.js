@@ -14,7 +14,7 @@ import {
     strategiesService,
     logsService,
 } from '../services/data';
-import { analyzeMarketConditions, calculateATR, calculateStochasticRSI, analyzePriceAction } from '../utils/indicators';
+import { analyzeMarketConditions, calculateATR, calculateStochasticRSI, analyzePriceAction, detectDivergences, calculateHigherTimeframeBias } from '../utils/indicators';
 import { APP_CONFIG, RISK_LEVELS } from '../constants/config';
 import { backgroundBot } from '../services/backgroundBot';
 import { binanceSocketService } from '../services/binanceSocket';
@@ -38,6 +38,9 @@ export const useAppStore = create((set, get) => ({
     openOrders: [],
     tradeStats: null,
     performanceStats: null, // rich stats from /api/stats
+
+    // Balance History (from DB)
+    balanceHistory: [],
 
     // Market State
     prices: {},
@@ -137,10 +140,12 @@ export const useAppStore = create((set, get) => ({
         }
     },
 
-    // ===== BOT LOG =====
+    // ===== BOT LOG (persisted to DB) =====
     addBotLog: (message, type = 'info') => {
         const entry = { id: Date.now(), time: new Date().toLocaleTimeString('pt-BR'), message, type };
         set(state => ({ botLog: [entry, ...state.botLog].slice(0, 100) }));
+        // Persist to backend (non-blocking)
+        logsService.saveBotLog(message, type).catch(() => {});
     },
 
     // ===== START BOT =====
@@ -182,6 +187,17 @@ export const useAppStore = create((set, get) => ({
             get().addBotLog(`⚡ Streams em tempo real ativos (${symbols.length} pares)`, 'success');
         } catch (e) {
             console.error('[Bot] WebSocket error:', e);
+        }
+
+        // Restore positions from DB + sync with Binance
+        try {
+            const restored = await positionManager.restorePositions();
+            if (restored && restored.length > 0) {
+                get().addBotLog(`📦 ${restored.length} posição(ões) restaurada(s) do banco`, 'success');
+            }
+            await positionManager.syncWithBinance();
+        } catch (e) {
+            get().addBotLog(`⚠️ Erro ao restaurar posições: ${e.message}`, 'warning');
         }
 
         // Start position monitor with SL/TP
@@ -230,13 +246,13 @@ export const useAppStore = create((set, get) => ({
     },
 
     // ===== STOP BOT =====
-    stopBot: () => {
+    stopBot: async () => {
         if (autoTradeInterval) { clearInterval(autoTradeInterval); autoTradeInterval = null; }
         botCycleRunning = false;
         set({ botRunning: false, botStatus: 'idle', autoTradeEnabled: false });
         get().addBotLog('⏹️ Bot parado', 'warning');
         binanceSocketService.closeAll();
-        positionManager.stopMonitoring();
+        await positionManager.stopMonitoring();
         backgroundBot.stopService().catch(() => { });
         const userId = get().userId;
         if (userId) {
@@ -288,9 +304,11 @@ export const useAppStore = create((set, get) => ({
 
             const scanResults = await Promise.all(symbols.map(async (symbol) => {
                 try {
-                    const [ticker, klines] = await Promise.all([
+                    // Fetch 15m klines + 1h klines for multi-timeframe
+                    const [ticker, klines, klines1h] = await Promise.all([
                         binanceService.get24hTicker(symbol),
                         binanceService.getKlines(symbol, '15m', 100),
+                        binanceService.getKlines(symbol, '1h', 50),
                     ]);
 
                     const analysis = analyzeMarketConditions(klines);
@@ -298,6 +316,13 @@ export const useAppStore = create((set, get) => ({
                     const stochRsi = calculateStochasticRSI(klines.map(k => k.close));
                     const priceAction = analyzePriceAction(klines);
                     const currentPrice = currentPrices[symbol] || parseFloat(ticker.lastPrice);
+
+                    // Multi-timeframe bias (1h EMA9 vs EMA21)
+                    const higherTimeframeBias = calculateHigherTimeframeBias(klines1h);
+
+                    // Divergence detection (RSI/MACD vs price)
+                    const closes = klines.map(k => k.close);
+                    const divergences = detectDivergences(closes);
 
                     const marketData = {
                         symbol,
@@ -307,6 +332,8 @@ export const useAppStore = create((set, get) => ({
                         atr,
                         stochRsi,
                         priceAction,
+                        higherTimeframeBias,
+                        divergences,
                     };
 
                     // Fetch intelligence signals in parallel
@@ -320,6 +347,8 @@ export const useAppStore = create((set, get) => ({
                         orderbookRatio: obSignal.ratio,
                         recentStats,
                         minConfidence,
+                        higherTimeframeBias,
+                        divergences,
                     };
 
                     const aiResult = await geminiService.analyzeMarket(marketData, get().tradingType, extraData);
@@ -355,17 +384,31 @@ export const useAppStore = create((set, get) => ({
                 return;
             }
 
-            // 6. Execute best opportunity
+            // 6. Safety check before trading
+            const totalBalance = spotUSDT + futuresUSDT;
+            tradingSafetyService.setStartingBalance(totalBalance);
+            const safetyCheck = await tradingSafetyService.canTrade(
+                get().userId, 0, recentStats,
+                { balance: totalBalance, activePositionCount: positionManager.getActivePositionCount() }
+            );
+            if (!safetyCheck.allowed) {
+                get().addBotLog(`Safety: ${safetyCheck.reason}`, 'warning');
+                set({ botStatus: 'waiting' });
+                botCycleRunning = false;
+                return;
+            }
+
+            // 7. Execute best opportunity
             const best = opportunities[0];
             const { symbol, aiResult, marketData } = best;
             const { action, venue, leverage, allocation, stopLossPercent, takeProfitPercent } = aiResult;
 
             set({ botStatus: 'trading' });
-            get().addBotLog(`🚀 MELHOR OPORTUNIDADE: ${action} ${symbol} em ${venue} | Confiança: ${aiResult.confidence}%`, 'trade');
+            get().addBotLog(`MELHOR: ${action} ${symbol} ${venue} | Confianca: ${aiResult.confidence}% | HTF: ${marketData.higherTimeframeBias || 'N/A'}`, 'trade');
 
             // Skip if already in this position
             if (positionManager.hasPosition(symbol)) {
-                get().addBotLog(`⚠️ ${symbol}: posição já aberta, pulando`, 'warning');
+                get().addBotLog(`${symbol}: posicao ja aberta, pulando`, 'warning');
                 set({ botStatus: 'waiting' });
                 botCycleRunning = false;
                 return;
@@ -381,14 +424,29 @@ export const useAppStore = create((set, get) => ({
                 const riskAmount = (venue === 'FUTURES' ? futuresUSDT : spotUSDT) * (riskConfig.riskPercent / 100);
                 const atrSizing = atr && atr > 0 ? riskAmount / (atr * 2) : null;
 
-                // SL/TP values (use AI suggestion or risk config defaults)
-                const slPct = stopLossPercent || riskConfig.stopLossPercent;
-                const tpPct = takeProfitPercent || riskConfig.takeProfitPercent;
+                // ATR-based SL/TP (dynamic, adapts to volatility)
+                let slPct, tpPct;
+                const atrConfig = {
+                    slMultiplier: riskConfig.slAtrMultiplier,
+                    tpMultiplier: riskConfig.tpAtrMultiplier,
+                    tp1Multiplier: riskConfig.tp1AtrMultiplier,
+                    trailingMultiplier: riskConfig.trailingAtrMultiplier,
+                    breakEvenThreshold: riskConfig.breakEvenAtrThreshold,
+                };
+
+                if (atr && atr > 0) {
+                    slPct = (atr * riskConfig.slAtrMultiplier / currentPrice) * 100;
+                    tpPct = (atr * riskConfig.tpAtrMultiplier / currentPrice) * 100;
+                    get().addBotLog(`ATR: $${atr.toFixed(4)} | SL: ${slPct.toFixed(2)}% | TP: ${tpPct.toFixed(2)}%`, 'info');
+                } else {
+                    slPct = stopLossPercent || riskConfig.stopLossPercent;
+                    tpPct = takeProfitPercent || riskConfig.takeProfitPercent;
+                }
                 const trailingPct = riskConfig.trailingStopPercent;
 
                 if (venue === 'FUTURES') {
                     if (futuresUSDT < 5) {
-                        get().addBotLog('⚠️ Saldo Futures insuficiente.', 'warning');
+                        get().addBotLog('Saldo Futures insuficiente.', 'warning');
                         set({ botStatus: 'waiting' });
                         botCycleRunning = false;
                         return;
@@ -407,24 +465,26 @@ export const useAppStore = create((set, get) => ({
                     quantity = Math.max(quantity, binanceService.futuresExchangeInfo[symbol]?.minQty || 0.001);
 
                     const side = action === 'LONG' ? 'BUY' : 'SELL';
-                    get().addBotLog(`⚡ Futures ${side}: ${quantity.toFixed(4)} ${symbol} @ ${lev}x | Margin: $${margin.toFixed(2)}`, 'trade');
+                    get().addBotLog(`Futures ${side}: ${quantity.toFixed(4)} ${symbol} @ ${lev}x | Margin: $${margin.toFixed(2)}`, 'trade');
 
                     const order = await binanceService.createFuturesOrder(symbol, side, 'MARKET', quantity);
 
-                    // Register position for SL/TP monitoring
-                    positionManager.openPosition(
-                        symbol, action, quantity, currentPrice,
-                        slPct, tpPct, 'FUTURES',
-                        riskConfig.trailingStopEnabled !== false,
-                        trailingPct
-                    );
+                    // Register with ATR-based position manager
+                    positionManager.openPosition({
+                        symbol, direction: action, quantity, entryPrice: currentPrice,
+                        stopLossPercent: slPct, takeProfitPercent: tpPct,
+                        venue: 'FUTURES',
+                        trailingStop: riskConfig.trailingStopEnabled !== false,
+                        trailingPercent: trailingPct,
+                        atr,
+                        atrConfig,
+                    });
 
-                    // Place native SL/TP orders on Binance for extra safety
+                    // Native Binance SL/TP as safety net
                     const slPrice = action === 'LONG' ? currentPrice * (1 - slPct / 100) : currentPrice * (1 + slPct / 100);
                     const tpPrice = action === 'LONG' ? currentPrice * (1 + tpPct / 100) : currentPrice * (1 - tpPct / 100);
                     await binanceService.setFuturesSLTP(symbol, side, slPrice, tpPrice, quantity).catch(() => { });
 
-                    // Save to DB
                     await tradesService.create({
                         symbol, side, type: 'MARKET', quantity,
                         price: currentPrice, total_value: quantity * currentPrice,
@@ -435,14 +495,14 @@ export const useAppStore = create((set, get) => ({
                 } else {
                     // SPOT — only LONG
                     if (spotUSDT < 5) {
-                        get().addBotLog('⚠️ Saldo Spot insuficiente.', 'warning');
+                        get().addBotLog('Saldo Spot insuficiente.', 'warning');
                         set({ botStatus: 'waiting' });
                         botCycleRunning = false;
                         return;
                     }
 
                     if (action !== 'LONG') {
-                        get().addBotLog('⚠️ SHORT em SPOT não suportado. Ignorando.', 'warning');
+                        get().addBotLog('SHORT em SPOT nao suportado. Ignorando.', 'warning');
                         set({ botStatus: 'waiting' });
                         botCycleRunning = false;
                         return;
@@ -451,45 +511,45 @@ export const useAppStore = create((set, get) => ({
                     const allocPct = Math.min((allocation || 15) / 100, riskConfig.maxTradePercent / 100);
                     const minOrder = riskConfig.minOrderUsdt || 6;
                     const tradeAmount = Math.max(spotUSDT * allocPct, minOrder);
-                    get().addBotLog(`💸 Spot BUY: $${tradeAmount.toFixed(2)} em ${symbol}`, 'trade');
+                    get().addBotLog(`Spot BUY: $${tradeAmount.toFixed(2)} em ${symbol}`, 'trade');
 
                     const order = await get().executeTrade(symbol, 'BUY', null, 'MARKET', null, tradeAmount);
 
-                    // Register position for app-level SL/TP monitoring
                     const execQty = parseFloat(order?.executedQty || 0);
                     if (execQty > 0) {
-                        positionManager.openPosition(
-                            symbol, 'LONG', execQty, currentPrice,
-                            slPct, tpPct, 'SPOT',
-                            riskConfig.trailingStopEnabled !== false,
-                            trailingPct
-                        );
+                        positionManager.openPosition({
+                            symbol, direction: 'LONG', quantity: execQty, entryPrice: currentPrice,
+                            stopLossPercent: slPct, takeProfitPercent: tpPct,
+                            venue: 'SPOT',
+                            trailingStop: riskConfig.trailingStopEnabled !== false,
+                            trailingPercent: trailingPct,
+                            atr,
+                            atrConfig,
+                        });
                     }
                 }
 
-                get().addBotLog(`✅ Operação Executada! SL: ${slPct}% | TP: ${tpPct}% | Trailing: ${trailingPct}%`, 'success');
+                get().addBotLog(`Operacao Executada! SL: ${slPct.toFixed(2)}% | TP: ${tpPct.toFixed(2)}% | Trailing ATR`, 'success');
                 set({ lastTradeTime: Date.now() });
 
                 // Save signal
+                const slPrice = action === 'LONG' ? currentPrice * (1 - slPct / 100) : currentPrice * (1 + slPct / 100);
+                const tpPrice = action === 'LONG' ? currentPrice * (1 + tpPct / 100) : currentPrice * (1 - tpPct / 100);
                 await signalsService.create({
                     symbol,
                     signal_type: action,
                     confidence: aiResult.confidence,
                     rsi_value: marketData.rsi,
                     current_price: currentPrice,
-                    stop_loss: action === 'LONG'
-                        ? currentPrice * (1 - slPct / 100)
-                        : currentPrice * (1 + slPct / 100),
-                    take_profit: action === 'LONG'
-                        ? currentPrice * (1 + tpPct / 100)
-                        : currentPrice * (1 - tpPct / 100),
+                    stop_loss: slPrice,
+                    take_profit: tpPrice,
                     gemini_analysis: aiResult.reasoning,
                     venue,
                     leverage: leverage || 1,
                 }).catch(() => { });
 
             } catch (err) {
-                get().addBotLog(`❌ Erro Trade: ${err.message}`, 'error');
+                get().addBotLog(`Erro Trade: ${err.message}`, 'error');
             }
 
             set({ botStatus: 'waiting' });
@@ -514,9 +574,11 @@ export const useAppStore = create((set, get) => ({
 
                 set({ userSettings: settings, autoTradeEnabled: settings.auto_trade_enabled, riskLevel });
 
+                const riskCfg = RISK_LEVELS[riskLevel];
                 tradingSafetyService.updateLimits({
-                    dailyLossLimit: settings.daily_loss_limit || 20,
+                    dailyLossPercent: riskCfg.dailyLossPercent || 3,
                     maxTradesPerHour: settings.max_trades_per_hour || 10,
+                    maxConcurrentPositions: riskCfg.maxConcurrentPositions || 3,
                 });
             }
 
@@ -549,9 +611,8 @@ export const useAppStore = create((set, get) => ({
 
             set({ userSettings: saved, isLoading: false });
 
-            if (settings.daily_loss_limit !== undefined || settings.max_trades_per_hour !== undefined) {
+            if (settings.max_trades_per_hour !== undefined) {
                 tradingSafetyService.updateLimits({
-                    dailyLossLimit: settings.daily_loss_limit,
                     maxTradesPerHour: settings.max_trades_per_hour,
                 });
             }
@@ -599,8 +660,15 @@ export const useAppStore = create((set, get) => ({
                 }
             }
 
+            const spotUSDT = balances.find(b => b.asset === 'USDT')?.free || 0;
             set({ balance: balances, totalBalanceUSDT: totalUSDT });
-            await balanceService.saveSnapshot(get().userId, { total_balance_usdt: totalUSDT }).catch(() => { });
+            // Save snapshot with spot/futures breakdown to DB
+            const futuresBalance = get().futuresState?.totalWalletBalance || 0;
+            await balanceService.saveSnapshot(get().userId, {
+                total_balance_usdt: totalUSDT,
+                spot_balance: spotUSDT,
+                futures_balance: futuresBalance,
+            }).catch(() => { });
             return balances;
         } catch (error) {
             console.error('[Store] fetchBalance error:', error);
@@ -872,6 +940,35 @@ export const useAppStore = create((set, get) => ({
     clearError: () => set({ error: null }),
     setError: (error) => set({ error }),
 
+    // ===== FETCH BALANCE HISTORY (from DB) =====
+    fetchBalanceHistory: async () => {
+        try {
+            const history = await balanceService.getHistory(200);
+            set({ balanceHistory: history || [] });
+            return history || [];
+        } catch (e) {
+            return [];
+        }
+    },
+
+    // ===== RESTORE BOT LOGS (from DB) =====
+    restoreBotLogs: async () => {
+        try {
+            const logs = await logsService.getRecent(100);
+            if (logs && logs.length > 0) {
+                const entries = logs.map(l => ({
+                    id: new Date(l.created_at).getTime(),
+                    time: new Date(l.created_at).toLocaleTimeString('pt-BR'),
+                    message: l.message,
+                    type: l.log_type || 'info',
+                }));
+                set({ botLog: entries });
+            }
+        } catch (e) {
+            console.warn('[Store] restoreBotLogs failed:', e.message);
+        }
+    },
+
     // ===== INITIALIZE =====
     initialize: async () => {
         set({ isLoading: true });
@@ -894,7 +991,22 @@ export const useAppStore = create((set, get) => ({
                     get().fetchTrades(),
                     get().fetchSignals(),
                     get().fetchPortfolio(),
+                    get().fetchBalanceHistory(),
+                    get().restoreBotLogs(),
                 ]);
+
+                // Restore starting balance for safety service from last known balance
+                const totalBalance = get().totalBalanceUSDT;
+                if (totalBalance > 0) {
+                    tradingSafetyService.setStartingBalance(totalBalance);
+                }
+
+                // Restore open positions from DB (visible even without bot)
+                try {
+                    await positionManager.restorePositions();
+                } catch (e) {
+                    console.warn('[Store] restorePositions failed:', e.message);
+                }
 
                 for (const symbol of APP_CONFIG.trading.defaultSymbols.slice(0, 3)) {
                     await get().fetchMarketData(symbol);
