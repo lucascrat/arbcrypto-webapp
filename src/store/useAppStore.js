@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { binanceService } from '../services/binance';
 import { geminiService } from '../services/gemini';
+import { localDecisionEngine } from '../services/localDecisionEngine';
 import { authService } from '../services/auth';
 import { secureCredentialsService } from '../services/secureCredentials';
 import { tradingSafetyService } from '../services/tradingSafety';
@@ -357,12 +358,13 @@ export const useAppStore = create((set, get) => ({
                         divergences,
                     };
 
-                    const aiResult = await geminiService.analyzeMarket(marketData, get().tradingType, extraData);
+                    // Use local decision engine (no API calls, instant)
+                    const aiResult = await localDecisionEngine.analyzeMarket(marketData, get().tradingType, extraData);
 
                     if (aiResult) {
                         return { symbol, aiResult, marketData, spotUSDT, futuresUSDT };
                     }
-                    console.warn(`[Bot] ${symbol}: Gemini returned null (parse error or empty response)`);
+                    console.warn(`[Bot] ${symbol}: Engine returned null`);
                     return null;
                 } catch (e) {
                     console.error(`[Bot] ❌ Scan error ${symbol}:`, e.message);
@@ -371,23 +373,13 @@ export const useAppStore = create((set, get) => ({
                 }
             };
 
-            // Process in batches of 6 to avoid Gemini rate limits
-            const BATCH_SIZE = 6;
-            const scanResults = [];
-            for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-                const batch = symbols.slice(i, i + BATCH_SIZE);
-                const batchResults = await Promise.all(batch.map(scanSymbol));
-                scanResults.push(...batchResults);
-                // Small delay between batches to respect Gemini rate limits
-                if (i + BATCH_SIZE < symbols.length) {
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                }
-            }
+            // All symbols in parallel — no rate limits with local engine
+            const scanResults = await Promise.all(symbols.map(scanSymbol));
 
-            // 5. Log ALL AI results for debugging, then filter
+            // 5. Log ALL results for debugging, then filter
             const validResults = scanResults.filter(r => r && r.aiResult);
 
-            // Log what Gemini returned for EVERY symbol
+            // Log what engine returned for EVERY symbol
             validResults.forEach(({ symbol, aiResult }) => {
                 const { action, confidence, venue, reasoning } = aiResult;
                 const icon = action === 'HOLD' ? '⏸️' : action === 'LONG' ? '🟢' : '🔴';
@@ -833,7 +825,7 @@ export const useAppStore = create((set, get) => ({
             if (!data) { set({ isLoading: false }); return null; }
 
             const riskConfig = RISK_LEVELS[get().riskLevel || 'medium'];
-            const analysis = await geminiService.analyzeMarket(data, get().tradingType, {
+            const analysis = await localDecisionEngine.analyzeMarket(data, get().tradingType, {
                 minConfidence: get().userSettings?.min_confidence || riskConfig.minConfidence,
             });
 
