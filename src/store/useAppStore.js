@@ -289,7 +289,12 @@ export const useAppStore = create((set, get) => ({
 
             // 2. Get risk level config
             const riskConfig = RISK_LEVELS[get().riskLevel || 'medium'];
-            const minConfidence = get().userSettings?.min_confidence || riskConfig.minConfidence;
+            const userMinConf = get().userSettings?.min_confidence;
+            const minConfidence = Math.min(
+                userMinConf || riskConfig.minConfidence,
+                riskConfig.minConfidence
+            );
+            console.log(`[Bot] Confidence threshold: ${minConfidence}% (user=${userMinConf}, config=${riskConfig.minConfidence})`);
 
             // 3. Load recent performance for AI context
             let recentStats = null;
@@ -363,11 +368,36 @@ export const useAppStore = create((set, get) => ({
                 }
             }));
 
-            // 5. Filter valid opportunities and find best
-            const opportunities = scanResults
-                .filter(r => r && r.aiResult && ['LONG', 'SHORT'].includes(r.aiResult.action))
+            // 5. Log ALL AI results for debugging, then filter
+            const validResults = scanResults.filter(r => r && r.aiResult);
+
+            // Log what Gemini returned for EVERY symbol
+            validResults.forEach(({ symbol, aiResult }) => {
+                const { action, confidence, venue, reasoning } = aiResult;
+                const icon = action === 'HOLD' ? '⏸️' : action === 'LONG' ? '🟢' : '🔴';
+                console.log(`[Bot] ${symbol}: ${action} ${confidence}% @ ${venue} — ${reasoning?.slice(0, 80)}`);
+                if (action === 'HOLD') {
+                    get().addBotLog(`${icon} ${symbol}: HOLD (${confidence}%) — ${reasoning?.slice(0, 60) || 'sem sinal claro'}`, 'debug');
+                }
+            });
+
+            // Filter actionable trades
+            const opportunities = validResults
+                .filter(r => ['LONG', 'SHORT'].includes(r.aiResult.action))
                 .filter(r => r.aiResult.confidence >= minConfidence)
                 .sort((a, b) => b.aiResult.confidence - a.aiResult.confidence);
+
+            // Also show trades that were filtered by confidence
+            const belowThreshold = validResults
+                .filter(r => ['LONG', 'SHORT'].includes(r.aiResult.action))
+                .filter(r => r.aiResult.confidence < minConfidence);
+
+            belowThreshold.forEach(({ symbol, aiResult }) => {
+                get().addBotLog(
+                    `⚠️ ${symbol}: ${aiResult.action} ${aiResult.confidence}% (abaixo de ${minConfidence}%) — descartado`,
+                    'warning'
+                );
+            });
 
             opportunities.forEach(({ symbol, aiResult }) => {
                 const { action, venue, leverage, confidence } = aiResult;
@@ -377,8 +407,14 @@ export const useAppStore = create((set, get) => ({
                 );
             });
 
+            const holdCount = validResults.filter(r => r.aiResult.action === 'HOLD').length;
+            const totalScanned = validResults.length;
+
             if (opportunities.length === 0) {
-                get().addBotLog(`⏸️ Nenhuma oportunidade ≥${minConfidence}% confiança. Aguardando...`, 'info');
+                get().addBotLog(
+                    `⏸️ Sem oportunidades (${holdCount}/${totalScanned} HOLD, ${belowThreshold.length} abaixo de ${minConfidence}%). Aguardando...`,
+                    'info'
+                );
                 set({ botStatus: 'waiting' });
                 botCycleRunning = false;
                 return;

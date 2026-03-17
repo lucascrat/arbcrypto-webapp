@@ -18,7 +18,7 @@ class GeminiService {
                 }
             ],
             generationConfig: {
-                temperature: 0.2,
+                temperature: 0.7,
                 maxOutputTokens: 1024
             }
         };
@@ -194,7 +194,9 @@ ${paCtx}
 ${newsSummary}
 ${statsCtx}
 
-DECIDE: action, venue, leverage (if futures), allocation %.`;
+⚠️ MANDATORY: You MUST choose LONG or SHORT. HOLD is only acceptable if ADX < 15 AND there is literal barb wire (overlapping doji candles). In ALL other cases, pick a direction. Even a 50% confidence trade with proper SL is better than no trade. If you return HOLD you must prove why with specific data points showing zero directional edge.
+
+DECIDE: action (LONG or SHORT strongly preferred), venue, leverage (if futures), allocation %.`;
 
         try {
             const response = await this.generateContent(prompt, systemPrompt);
