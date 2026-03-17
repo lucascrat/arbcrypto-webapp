@@ -307,7 +307,8 @@ export const useAppStore = create((set, get) => ({
             const currentPrices = get().prices;
             const symbols = APP_CONFIG.trading.defaultSymbols;
 
-            const scanResults = await Promise.all(symbols.map(async (symbol) => {
+            // Helper: scan a single symbol
+            const scanSymbol = async (symbol) => {
                 try {
                     // Fetch 15m klines + 1h klines for multi-timeframe
                     const [ticker, klines, klines1h] = await Promise.all([
@@ -361,12 +362,27 @@ export const useAppStore = create((set, get) => ({
                     if (aiResult) {
                         return { symbol, aiResult, marketData, spotUSDT, futuresUSDT };
                     }
+                    console.warn(`[Bot] ${symbol}: Gemini returned null (parse error or empty response)`);
                     return null;
                 } catch (e) {
-                    console.error(`[Bot] Scan error ${symbol}:`, e.message);
+                    console.error(`[Bot] ❌ Scan error ${symbol}:`, e.message);
+                    get().addBotLog(`❌ ${symbol}: ${e.message?.slice(0, 60)}`, 'error');
                     return null;
                 }
-            }));
+            };
+
+            // Process in batches of 6 to avoid Gemini rate limits
+            const BATCH_SIZE = 6;
+            const scanResults = [];
+            for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+                const batch = symbols.slice(i, i + BATCH_SIZE);
+                const batchResults = await Promise.all(batch.map(scanSymbol));
+                scanResults.push(...batchResults);
+                // Small delay between batches to respect Gemini rate limits
+                if (i + BATCH_SIZE < symbols.length) {
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+            }
 
             // 5. Log ALL AI results for debugging, then filter
             const validResults = scanResults.filter(r => r && r.aiResult);
