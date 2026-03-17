@@ -37,7 +37,7 @@ export const APP_CONFIG = {
         takeProfitPercent: 3.5,
         trailingStopPercent: 1.5,
         trailingStopEnabled: true,
-        minConfidenceDefault: 70, // overridden by risk level
+        minConfidenceDefault: 49, // overridden by risk level
     },
 
     // Technical Indicators Configuration
@@ -85,11 +85,11 @@ export const RISK_LEVELS = {
         takeProfitPercent: 3.0,
         trailingStopPercent: 1.0,
         maxLeverage: 2,
-        minConfidence: 80,
+        minConfidence: 49,
         minOrderUsdt: 6,
         maxConcurrentPositions: 2,
-        dailyLossPercent: 3,       // Max 3% daily loss (% of balance)
-        description: 'Trades apenas com alta confiança. Ideal para capital pequeno.',
+        dailyLossPercent: 3,
+        description: 'Trades conservadores com SL apertado.',
     },
     medium: {
         label: 'Moderado',
@@ -104,7 +104,7 @@ export const RISK_LEVELS = {
         takeProfitPercent: 3.5,
         trailingStopPercent: 1.5,
         maxLeverage: 3,
-        minConfidence: 70,
+        minConfidence: 49,
         minOrderUsdt: 6,
         maxConcurrentPositions: 3,
         dailyLossPercent: 4,
@@ -123,9 +123,9 @@ export const RISK_LEVELS = {
         takeProfitPercent: 5.0,
         trailingStopPercent: 2.0,
         maxLeverage: 5,
-        minConfidence: 60,
+        minConfidence: 49,
         minOrderUsdt: 6,
-        maxConcurrentPositions: 3,
+        maxConcurrentPositions: 5,
         dailyLossPercent: 5,
         description: 'Mais operações, maior risco. Trailing stop ativo.',
     },
