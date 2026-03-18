@@ -321,20 +321,28 @@ class LocalDecisionEngine {
         // ═══════════════════════════════════════
         const totalPoints = bullScore + bearScore;
         const rawDiff = Math.abs(bullScore - bearScore);
+        const winningScore = Math.max(bullScore, bearScore);
 
-        // Base confidence: how decisive is the signal?
-        let confidence = totalPoints > 0
-            ? Math.round((rawDiff / Math.max(totalPoints, 1)) * 100)
-            : 0;
+        // NEW FORMULA: Confidence based on winning side's absolute strength
+        // + directional edge bonus
+        // This avoids the 0% problem when both sides have equal signals
+        let confidence = 0;
 
-        // Boost confidence if there are many agreeing signals
+        if (totalPoints > 0) {
+            // Base: How strong is the winning side? (0-100 scale, 20pts = 100%)
+            const strengthComponent = Math.min(100, (winningScore / 20) * 100);
+
+            // Edge: How much stronger is winning side vs losing? (0-100 scale)
+            const edgeComponent = (rawDiff / Math.max(totalPoints, 1)) * 100;
+
+            // Weighted: 60% strength + 40% edge
+            confidence = Math.round(strengthComponent * 0.6 + edgeComponent * 0.4);
+        }
+
+        // Signal count bonus/penalty
         const activeSignalCount = signals.filter(s => s.side !== 'neutral').length;
         if (activeSignalCount >= 8) confidence += 5;
-        else if (activeSignalCount <= 3) confidence -= 5;
-
-        // If total points are high and directional, boost confidence
-        if (totalPoints >= 15 && rawDiff >= 8) confidence += 10;
-        else if (totalPoints >= 10 && rawDiff >= 5) confidence += 5;
+        else if (activeSignalCount <= 2) confidence -= 10;
 
         // ═══════════════════════════════════════
         // 4. APPLY MODIFIERS
@@ -395,9 +403,9 @@ class LocalDecisionEngine {
             signals.push({ side: 'neutral', pts: 0, reason: 'ADX < 15 trendless -10' });
         }
 
-        // Trading range penalty
+        // Trading range: small penalty but NOT a HOLD trigger
         if (pa && pa.marketPhase === 'trading_range') {
-            confidence -= 8;
+            confidence -= 5;
         }
 
         // Clamp confidence
@@ -410,10 +418,10 @@ class LocalDecisionEngine {
 
         if (forceHold) {
             action = 'HOLD';
-        } else if (confidence < 30) {
-            action = 'HOLD';
-        } else if (totalPoints < 3) {
-            action = 'HOLD';
+        } else if (confidence < 20) {
+            action = 'HOLD'; // Only HOLD for very low confidence
+        } else if (totalPoints < 2) {
+            action = 'HOLD'; // Almost no data
         }
 
         // SPOT cannot SHORT
