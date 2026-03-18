@@ -9,6 +9,38 @@ import { RISK_LEVELS } from '../constants/config';
 class LocalDecisionEngine {
     constructor() {
         this.name = 'LocalDecisionEngine';
+        // Per-cycle cache for global data (news, flows) — avoids 24 redundant API calls
+        this._cycleCache = { news: null, flowData: null, whaleCache: {}, ts: 0 };
+        this.CACHE_TTL_MS = 300000; // 5 minutes
+    }
+
+    /**
+     * Get cached global data (news + flows). Only fetches once per 5min.
+     */
+    async _getGlobalData(rsi) {
+        const now = Date.now();
+        if (now - this._cycleCache.ts > this.CACHE_TTL_MS) {
+            const [news, flowData] = await Promise.all([
+                marketIntelligence.getLatestNews(),
+                marketIntelligence.getGlobalFlows(),
+            ]);
+            this._cycleCache.news = news;
+            this._cycleCache.flowData = flowData;
+            this._cycleCache.whaleCache = {};
+            this._cycleCache.ts = now;
+        }
+        return {
+            news: this._cycleCache.news,
+            flowData: this._cycleCache.flowData,
+            fearGreed: marketIntelligence.getFearAndGreedProxy(rsi),
+        };
+    }
+
+    async _getWhaleData(symbol) {
+        if (!this._cycleCache.whaleCache[symbol]) {
+            this._cycleCache.whaleCache[symbol] = await marketIntelligence.analyzeWhaleActivity(symbol);
+        }
+        return this._cycleCache.whaleCache[symbol];
     }
 
     /**
@@ -16,13 +48,9 @@ class LocalDecisionEngine {
      * Same signature and return format as geminiService.analyzeMarket()
      */
     async analyzeMarket(marketData, venue = 'AUTO', extraData = {}) {
-        // 1. Fetch External Data (same as Gemini did)
-        const [news, whaleData, flowData] = await Promise.all([
-            marketIntelligence.getLatestNews(),
-            marketIntelligence.analyzeWhaleActivity(marketData.symbol),
-            marketIntelligence.getGlobalFlows(),
-        ]);
-        const fearGreed = marketIntelligence.getFearAndGreedProxy(marketData.rsi);
+        // 1. Fetch External Data — cached per cycle (not per symbol)
+        const { news, flowData, fearGreed } = await this._getGlobalData(marketData.rsi);
+        const whaleData = await this._getWhaleData(marketData.symbol);
 
         const { fundingRate, orderbookRatio, higherTimeframeBias, divergences } = extraData;
 
@@ -241,8 +269,39 @@ class LocalDecisionEngine {
         }
 
         // ═══════════════════════════════════════
-        // TIER 5 — Smart Money / Volume — max ~5pts
+        // TIER 5 — Smart Money / Volume / VWAP / OBV — max ~8pts
         // ═══════════════════════════════════════
+
+        // VWAP — price above/below volume-weighted average
+        if (marketData.vwap) {
+            const dev = marketData.vwap.deviationPercent;
+            if (dev > 0.5) {
+                bullScore += 1.5;
+                signals.push({ side: 'bull', pts: 1.5, reason: `Price above VWAP (+${dev.toFixed(1)}%)` });
+            } else if (dev < -0.5) {
+                bearScore += 1.5;
+                signals.push({ side: 'bear', pts: 1.5, reason: `Price below VWAP (${dev.toFixed(1)}%)` });
+            }
+        }
+
+        // OBV — On-Balance Volume trend + divergence
+        if (marketData.obv) {
+            if (marketData.obv.trend === 'bullish' && marketData.obv.rising) {
+                bullScore += 1.5;
+                signals.push({ side: 'bull', pts: 1.5, reason: 'OBV bullish trend + rising' });
+            } else if (marketData.obv.trend === 'bearish' && !marketData.obv.rising) {
+                bearScore += 1.5;
+                signals.push({ side: 'bear', pts: 1.5, reason: 'OBV bearish trend + falling' });
+            }
+            // OBV divergence is a strong reversal signal
+            if (marketData.obv.divergence === 'bearish') {
+                bearScore += 2.0;
+                signals.push({ side: 'bear', pts: 2.0, reason: 'OBV bearish divergence (price up, volume down)' });
+            } else if (marketData.obv.divergence === 'bullish') {
+                bullScore += 2.0;
+                signals.push({ side: 'bull', pts: 2.0, reason: 'OBV bullish divergence (price down, volume up)' });
+            }
+        }
 
         // Volume spike
         if (marketData.volume?.ratio > 2.0) {
@@ -469,24 +528,23 @@ class LocalDecisionEngine {
             takeProfitPercent = parseFloat((stopLossPercent * 2).toFixed(2));
         }
 
-        // Leverage (futures only)
+        // Leverage (futures only) — smooth linear scaling
         let leverage = 1;
         if (resolvedVenue === 'FUTURES' && action !== 'HOLD') {
             const maxLev = riskConfig.maxLeverage;
-            if (confidence >= 85) leverage = maxLev;
-            else if (confidence >= 75) leverage = Math.ceil(maxLev * 0.7);
-            else if (confidence >= 65) leverage = Math.ceil(maxLev * 0.5);
-            else if (confidence >= 55) leverage = Math.ceil(maxLev * 0.3);
-            else leverage = 1;
-            leverage = Math.max(1, Math.min(leverage, maxLev));
+            // Linear scale: 49% → 1x, 100% → maxLev
+            const confRange = Math.max(0, Math.min(1, (confidence - 49) / 51));
+            leverage = Math.max(1, Math.round(1 + confRange * (maxLev - 1)));
+            leverage = Math.min(leverage, maxLev);
         }
 
-        // Allocation
-        let allocation = Math.min(25, riskConfig.maxTradePercent / 2);
-        if (confidence >= 85) allocation = Math.min(25, allocation * 1.2);
-        else if (confidence >= 70) allocation = allocation;
-        else if (confidence >= 55) allocation = Math.max(5, allocation * 0.6);
-        else allocation = Math.max(3, allocation * 0.4);
+        // Allocation — smooth scaling based on confidence
+        const maxAlloc = riskConfig.maxTradePercent / 2;
+        let allocation;
+        if (confidence >= 80) allocation = Math.min(maxAlloc, maxAlloc * 0.9);
+        else if (confidence >= 65) allocation = Math.min(maxAlloc, maxAlloc * 0.7);
+        else if (confidence >= 50) allocation = Math.max(5, maxAlloc * 0.5);
+        else allocation = Math.max(3, maxAlloc * 0.3);
         allocation = Math.round(allocation);
 
         // Market sentiment

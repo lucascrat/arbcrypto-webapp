@@ -1,35 +1,75 @@
 import { apiService } from './api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const CB_STORAGE_KEY = '@arbcrypto_circuit_breaker';
 
 /**
  * 🛡️ Trading Safety Circuit Breakers
  * Previne perdas catastróficas com mecanismos automáticos de proteção.
+ * Circuit breaker state persists across app restarts.
  */
 class TradingSafetyService {
     constructor() {
-        this.dailyLossPercent = 3;    // 3% do saldo como perda diária máxima
+        this.dailyLossPercent = 3;
         this.maxTradesPerHour = 10;
-        this.minWinRate = 40;         // pausar se win rate < 40% (era 20%)
+        this.minWinRate = 40;
         this.minTradesForWinRate = 20;
         this.maxDrawdownPercent = 15;
         this.maxConcurrentPositions = 3;
 
-        // Cooldown escalonado por drawdown
         this.cooldownTiers = [
-            { drawdownPercent: 10, cooldownMs: 86400000 }, // >10%: 24h
-            { drawdownPercent: 5,  cooldownMs: 7200000 },  // 5-10%: 2h
-            { drawdownPercent: 3,  cooldownMs: 1800000 },  // 3-5%: 30min
+            { drawdownPercent: 10, cooldownMs: 86400000 },
+            { drawdownPercent: 5,  cooldownMs: 7200000 },
+            { drawdownPercent: 3,  cooldownMs: 1800000 },
         ];
-        this.defaultCooldownMs = 300000; // 5min fallback
+        this.defaultCooldownMs = 300000;
 
-        // Emergency halt
         this.startingBalance = null;
-        this.emergencyHaltPercent = 25; // Halt if balance drops >25% from start
+        this.emergencyHaltPercent = 25;
 
-        // Circuit breaker state
+        // Circuit breaker state — restored from storage on init
         this.isCircuitBreakerActive = false;
         this.circuitBreakerReason = null;
         this.circuitBreakerActivatedAt = null;
         this.currentCooldownMs = this.defaultCooldownMs;
+
+        // Restore persisted state on startup
+        this._restoreCircuitBreaker();
+    }
+
+    async _restoreCircuitBreaker() {
+        try {
+            const saved = await AsyncStorage.getItem(CB_STORAGE_KEY);
+            if (saved) {
+                const state = JSON.parse(saved);
+                const elapsed = Date.now() - state.activatedAt;
+                if (elapsed < state.cooldownMs) {
+                    // Still active
+                    this.isCircuitBreakerActive = true;
+                    this.circuitBreakerReason = state.reason;
+                    this.circuitBreakerActivatedAt = state.activatedAt;
+                    this.currentCooldownMs = state.cooldownMs;
+                    console.log(`[Safety] Circuit breaker restored: ${state.reason} (${Math.ceil((state.cooldownMs - elapsed) / 60000)}min remaining)`);
+                } else {
+                    // Expired — clear
+                    await AsyncStorage.removeItem(CB_STORAGE_KEY);
+                }
+            }
+        } catch (e) {
+            console.warn('[Safety] Could not restore circuit breaker state:', e.message);
+        }
+    }
+
+    async _persistCircuitBreaker() {
+        try {
+            await AsyncStorage.setItem(CB_STORAGE_KEY, JSON.stringify({
+                reason: this.circuitBreakerReason,
+                activatedAt: this.circuitBreakerActivatedAt,
+                cooldownMs: this.currentCooldownMs,
+            }));
+        } catch (e) {
+            console.warn('[Safety] Could not persist circuit breaker:', e.message);
+        }
     }
 
     setStartingBalance(balance) {
@@ -157,12 +197,14 @@ class TradingSafetyService {
         this.circuitBreakerActivatedAt = Date.now();
         this.currentCooldownMs = cooldownMs || this.defaultCooldownMs;
         console.log(`[Safety] Circuit breaker: ${reason} (cooldown: ${Math.ceil(this.currentCooldownMs / 60000)}min)`);
+        this._persistCircuitBreaker();
     }
 
     resetCircuitBreaker() {
         this.isCircuitBreakerActive = false;
         this.circuitBreakerReason = null;
         this.circuitBreakerActivatedAt = null;
+        AsyncStorage.removeItem(CB_STORAGE_KEY).catch(() => {});
     }
 
     forceResetCircuitBreaker() {

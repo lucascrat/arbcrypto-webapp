@@ -337,22 +337,38 @@ class PositionManagerService {
                     ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100
                     : ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100;
 
-                // --- Break-even stop activation ---
+                // --- Break-even stop activation (ATR-based buffer instead of 0.1%) ---
                 if (!pos.breakEvenActivated && pos.breakEvenPrice) {
                     const breakEvenHit = pos.direction === 'LONG'
                         ? currentPrice >= pos.breakEvenPrice
                         : currentPrice <= pos.breakEvenPrice;
 
                     if (breakEvenHit) {
+                        // Use ATR-based buffer (0.5 ATR above entry) instead of fixed 0.1%
+                        const buffer = pos.atr ? pos.atr * 0.5 : pos.entryPrice * 0.003;
                         const newSL = pos.direction === 'LONG'
-                            ? pos.entryPrice * 1.001
-                            : pos.entryPrice * 0.999;
+                            ? pos.entryPrice + buffer
+                            : pos.entryPrice - buffer;
                         pos.stopLoss = pos.direction === 'LONG'
                             ? Math.max(pos.stopLoss, newSL)
                             : Math.min(pos.stopLoss, newSL);
                         pos.breakEvenActivated = true;
-                        this.log(`Break-even ativado: ${symbol} SL movido para $${pos.stopLoss.toFixed(4)}`, 'success');
+                        this.log(`Break-even ativado: ${symbol} SL $${pos.stopLoss.toFixed(4)} (buffer: $${buffer.toFixed(4)})`, 'success');
                     }
+                }
+
+                // --- Time-based stop: close after 4h if not profitable ---
+                const MAX_HOLD_MS = 4 * 60 * 60 * 1000; // 4 hours
+                const holdTime = Date.now() - pos.openedAt;
+                if (holdTime > MAX_HOLD_MS && pnlPct <= 0.1) {
+                    this.log(`TIME-STOP: ${symbol} aberto ha ${(holdTime / 3600000).toFixed(1)}h sem lucro (${pnlPct.toFixed(2)}%). Fechando.`, 'warning');
+                    try {
+                        await this._executeExit(pos, currentPrice, 'TIME_STOP');
+                        this.positions.delete(symbol);
+                    } catch (e) {
+                        this.log(`Erro time-stop ${symbol}: ${e.message}`, 'error');
+                    }
+                    continue;
                 }
 
                 // --- Partial Take-Profit (TP1 = close 50%) ---
@@ -369,9 +385,11 @@ class PositionManagerService {
                             await this._executePartialExit(pos, currentPrice, partialQty);
                             pos.quantity = pos.quantity - partialQty;
                             pos.partialExitDone = true;
+                            // ATR-based break-even after partial exit
+                            const buffer = pos.atr ? pos.atr * 0.5 : pos.entryPrice * 0.003;
                             pos.stopLoss = pos.direction === 'LONG'
-                                ? Math.max(pos.stopLoss, pos.entryPrice * 1.001)
-                                : Math.min(pos.stopLoss, pos.entryPrice * 0.999);
+                                ? Math.max(pos.stopLoss, pos.entryPrice + buffer)
+                                : Math.min(pos.stopLoss, pos.entryPrice - buffer);
                             pos.breakEvenActivated = true;
                             this.log(`Restante: ${pos.quantity} ${symbol} com trailing stop`, 'info');
                         } catch (e) {
@@ -381,16 +399,18 @@ class PositionManagerService {
                     }
                 }
 
-                // --- Trailing stop (ATR-based or fallback %) ---
+                // --- Trailing stop with cooldown (ATR-based or fallback %) ---
                 if (pos.trailingStop) {
-                    if (pos.direction === 'LONG' && currentPrice > pos.peakPrice) {
+                    const minPeakMove = pos.atr ? pos.atr * 0.3 : pos.peakPrice * 0.002; // Only update if peak moved significantly
+
+                    if (pos.direction === 'LONG' && currentPrice > pos.peakPrice + minPeakMove) {
                         pos.peakPrice = currentPrice;
                         const newSL = pos.trailingDistance
                             ? currentPrice - pos.trailingDistance
                             : currentPrice * (1 - pos.trailingPercent / 100);
                         pos.stopLoss = Math.max(pos.stopLoss, newSL);
                         this.log(`Trailing SL: ${symbol} peak $${currentPrice.toFixed(4)} SL $${pos.stopLoss.toFixed(4)}`, 'info');
-                    } else if (pos.direction === 'SHORT' && currentPrice < pos.peakPrice) {
+                    } else if (pos.direction === 'SHORT' && currentPrice < pos.peakPrice - minPeakMove) {
                         pos.peakPrice = currentPrice;
                         const newSL = pos.trailingDistance
                             ? currentPrice + pos.trailingDistance

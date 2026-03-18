@@ -13,6 +13,26 @@ class BinanceService {
         this.serverTimeOffset = 0;
         this.exchangeInfo = {};
         this.futuresExchangeInfo = {};
+        // Rate limiting: max 8 requests per second to avoid Binance bans
+        this._requestQueue = [];
+        this._requestTimestamps = [];
+        this._maxRequestsPerSecond = 8;
+        this._lastTimeSyncAt = 0;
+    }
+
+    /**
+     * Rate limiter: ensures max N requests per second
+     */
+    async _rateLimit() {
+        const now = Date.now();
+        // Remove timestamps older than 1 second
+        this._requestTimestamps = this._requestTimestamps.filter(t => now - t < 1000);
+        if (this._requestTimestamps.length >= this._maxRequestsPerSecond) {
+            const oldestInWindow = this._requestTimestamps[0];
+            const waitMs = 1000 - (now - oldestInWindow) + 10;
+            if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
+        }
+        this._requestTimestamps.push(Date.now());
     }
 
     setCredentials(apiKey, apiSecret, isTestnet = false) {
@@ -59,8 +79,12 @@ class BinanceService {
             throw new Error('Chaves da API não configuradas.');
         }
 
-        if (this.serverTimeOffset === 0) {
+        await this._rateLimit();
+
+        // Re-sync time every hour to prevent clock drift
+        if (this.serverTimeOffset === 0 || Date.now() - this._lastTimeSyncAt > 3600000) {
             await this.syncServerTime();
+            this._lastTimeSyncAt = Date.now();
         }
 
         const timestamp = await this.getTimestamp();
@@ -134,6 +158,7 @@ class BinanceService {
     }
 
     async makePublicRequest(endpoint, params = {}, type = 'SPOT') {
+        await this._rateLimit();
         const queryString = Object.entries(params)
             .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
             .join('&');

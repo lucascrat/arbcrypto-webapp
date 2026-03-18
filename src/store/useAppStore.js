@@ -285,8 +285,23 @@ export const useAppStore = create((set, get) => ({
                 get().fetchFuturesAccount(),
             ]);
 
-            const spotUSDT = spotBalances.find(b => b.asset === 'USDT')?.free || 0;
+            const spotUSDT = parseFloat(spotBalances?.find(b => b.asset === 'USDT')?.free || 0);
             const futuresUSDT = parseFloat(futuresInfo?.availableBalance || 0);
+
+            // Validate balances — abort if NaN
+            if (isNaN(spotUSDT) || isNaN(futuresUSDT)) {
+                get().addBotLog('❌ Erro ao obter saldo (NaN). Pulando ciclo.', 'error');
+                set({ botStatus: 'waiting' });
+                botCycleRunning = false;
+                return;
+            }
+
+            // Sync positions with Binance (detect externally closed positions)
+            try {
+                await positionManager.syncWithBinance();
+            } catch (e) {
+                console.warn('[Bot] syncWithBinance failed:', e.message);
+            }
 
             // 2. Get risk level config
             const riskConfig = RISK_LEVELS[get().riskLevel || 'medium'];

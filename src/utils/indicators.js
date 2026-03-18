@@ -121,7 +121,7 @@ export function calculateBollingerBands(closes, period = 20, stdDev = 2) {
     };
 }
 
-// Calculate ADX (Average Directional Index)
+// Calculate ADX (Average Directional Index) — properly smoothed
 export function calculateADX(highs, lows, closes, period = 14) {
     if (closes.length <= period * 2) return null;
 
@@ -136,7 +136,6 @@ export function calculateADX(highs, lows, closes, period = 14) {
         const prevLow = lows[i - 1];
         const prevClose = closes[i - 1];
 
-        // True Range
         const tr = Math.max(
             high - low,
             Math.abs(high - prevClose),
@@ -144,7 +143,6 @@ export function calculateADX(highs, lows, closes, period = 14) {
         );
         trueRanges.push(tr);
 
-        // Directional Movement
         const upMove = high - prevHigh;
         const downMove = prevLow - low;
 
@@ -152,24 +150,39 @@ export function calculateADX(highs, lows, closes, period = 14) {
         minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
     }
 
-    // Smooth the values
-    const smoothedTR = smoothArray(trueRanges, period);
-    const smoothedPlusDM = smoothArray(plusDM, period);
-    const smoothedMinusDM = smoothArray(minusDM, period);
+    // Wilder's smoothing for TR, +DM, -DM → produces arrays of +DI, -DI, DX
+    const dxValues = [];
+    let sTR = trueRanges.slice(0, period).reduce((a, b) => a + b, 0);
+    let sPlusDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
+    let sMinusDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
 
-    // Calculate +DI and -DI
-    const plusDI = (smoothedPlusDM / smoothedTR) * 100;
-    const minusDI = (smoothedMinusDM / smoothedTR) * 100;
+    for (let i = period; i < trueRanges.length; i++) {
+        sTR = sTR - (sTR / period) + trueRanges[i];
+        sPlusDM = sPlusDM - (sPlusDM / period) + plusDM[i];
+        sMinusDM = sMinusDM - (sMinusDM / period) + minusDM[i];
 
-    // Calculate DX
-    const dx = (Math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100;
+        const pDI = sTR > 0 ? (sPlusDM / sTR) * 100 : 0;
+        const mDI = sTR > 0 ? (sMinusDM / sTR) * 100 : 0;
+        const diSum = pDI + mDI;
+        const dx = diSum > 0 ? (Math.abs(pDI - mDI) / diSum) * 100 : 0;
+        dxValues.push({ dx, pDI, mDI });
+    }
 
+    if (dxValues.length < period) return null;
+
+    // Smooth DX with Wilder's EMA to get true ADX
+    let adxSmoothed = dxValues.slice(0, period).reduce((a, v) => a + v.dx, 0) / period;
+    for (let i = period; i < dxValues.length; i++) {
+        adxSmoothed = ((adxSmoothed * (period - 1)) + dxValues[i].dx) / period;
+    }
+
+    const latest = dxValues[dxValues.length - 1];
     return {
-        adx: dx, // Simplified - should be smoothed over period
-        plusDI,
-        minusDI,
-        trend: plusDI > minusDI ? 'bullish' : 'bearish',
-        strength: dx > 25 ? 'strong' : 'weak',
+        adx: adxSmoothed,
+        plusDI: latest.pDI,
+        minusDI: latest.mDI,
+        trend: latest.pDI > latest.mDI ? 'bullish' : 'bearish',
+        strength: adxSmoothed > 25 ? 'strong' : 'weak',
     };
 }
 
@@ -179,6 +192,65 @@ function smoothArray(data, period) {
         sum = sum - (sum / period) + data[i];
     }
     return sum;
+}
+
+// Calculate VWAP (Volume Weighted Average Price)
+export function calculateVWAP(klines) {
+    if (!klines || klines.length < 2) return null;
+
+    let cumulativeTPV = 0; // typical price × volume
+    let cumulativeVolume = 0;
+
+    for (const k of klines) {
+        const typicalPrice = (k.high + k.low + k.close) / 3;
+        cumulativeTPV += typicalPrice * k.volume;
+        cumulativeVolume += k.volume;
+    }
+
+    const vwap = cumulativeVolume > 0 ? cumulativeTPV / cumulativeVolume : null;
+    const currentPrice = klines[klines.length - 1].close;
+
+    return {
+        vwap,
+        priceVsVwap: currentPrice > vwap ? 'above' : 'below',
+        deviationPercent: vwap ? ((currentPrice - vwap) / vwap) * 100 : 0,
+    };
+}
+
+// Calculate OBV (On-Balance Volume)
+export function calculateOBV(klines) {
+    if (!klines || klines.length < 10) return null;
+
+    let obv = 0;
+    const obvArray = [0];
+
+    for (let i = 1; i < klines.length; i++) {
+        if (klines[i].close > klines[i - 1].close) {
+            obv += klines[i].volume;
+        } else if (klines[i].close < klines[i - 1].close) {
+            obv -= klines[i].volume;
+        }
+        obvArray.push(obv);
+    }
+
+    // OBV trend: compare recent OBV EMA vs older
+    const obvEmaShort = calculateEMA(obvArray, 5);
+    const obvEmaLong = calculateEMA(obvArray, 20);
+
+    // Divergence check: price up but OBV down = bearish divergence
+    const priceChange = klines[klines.length - 1].close - klines[klines.length - 10].close;
+    const obvChange = obvArray[obvArray.length - 1] - obvArray[obvArray.length - 10];
+
+    let divergence = 'none';
+    if (priceChange > 0 && obvChange < 0) divergence = 'bearish';
+    else if (priceChange < 0 && obvChange > 0) divergence = 'bullish';
+
+    return {
+        obv,
+        trend: obvEmaShort > obvEmaLong ? 'bullish' : 'bearish',
+        divergence,
+        rising: obvArray[obvArray.length - 1] > obvArray[obvArray.length - 5],
+    };
 }
 
 // Comprehensive analysis using all indicators
@@ -195,6 +267,8 @@ export function analyzeMarketConditions(klines) {
     const ema21 = calculateEMA(closes, 21);
     const sma50 = calculateSMA(closes, 50);
     const adx = calculateADX(highs, lows, closes);
+    const vwap = calculateVWAP(klines);
+    const obv = calculateOBV(klines);
 
     const currentPrice = closes[closes.length - 1];
     const avgVolume = calculateSMA(volumes, 20);
@@ -209,6 +283,8 @@ export function analyzeMarketConditions(klines) {
         ema21,
         sma50,
         adx,
+        vwap,
+        obv,
         volume: {
             current: currentVolume,
             average: avgVolume,
@@ -371,14 +447,18 @@ export function calculateStochasticRSI(closes, rsiPeriod = 14, stochPeriod = 14,
 
     const k = smoothedK[smoothedK.length - 1];
     const d = smoothedD[smoothedD.length - 1];
+    const kPrev = smoothedK.length >= 2 ? smoothedK[smoothedK.length - 2] : k;
+    const dPrev = smoothedD.length >= 2 ? smoothedD[smoothedD.length - 2] : d;
 
     return {
         k,
         d,
         oversold: k < 20 && d < 20,
         overbought: k > 80 && d > 80,
-        bullishCross: k > d && k < 50,
-        bearishCross: k < d && k > 50,
+        // True crossover: K crossed above D (was below, now above) in oversold zone
+        bullishCross: k > d && kPrev <= dPrev && k < 50,
+        // True crossover: K crossed below D (was above, now below) in overbought zone
+        bearishCross: k < d && kPrev >= dPrev && k > 50,
     };
 }
 
