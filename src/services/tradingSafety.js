@@ -73,7 +73,11 @@ class TradingSafetyService {
     }
 
     setStartingBalance(balance) {
-        if (!this.startingBalance) this.startingBalance = balance;
+        // Always update starting balance if not set OR if current balance is HIGHER
+        // (means user deposited more or portfolio grew)
+        if (!this.startingBalance || balance > this.startingBalance) {
+            this.startingBalance = balance;
+        }
     }
 
     async canTrade(userId, tradeAmount, tradeStats, { balance, activePositionCount } = {}) {

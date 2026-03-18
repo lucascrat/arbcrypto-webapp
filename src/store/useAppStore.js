@@ -159,6 +159,10 @@ export const useAppStore = create((set, get) => ({
         if (state.botRunning) return;
 
         set({ botRunning: true, botStatus: 'scanning', autoTradeEnabled: true, error: null });
+
+        // Reset circuit breaker and starting balance on manual bot start
+        tradingSafetyService.forceResetCircuitBreaker();
+        tradingSafetyService.startingBalance = null; // Will be recalculated with total portfolio
         get().addBotLog('🚀 Bot Super Trader iniciado!', 'success');
 
         try {
@@ -444,11 +448,13 @@ export const useAppStore = create((set, get) => ({
             }
 
             // 6. Safety check before trading
-            const totalBalance = spotUSDT + futuresUSDT;
-            tradingSafetyService.setStartingBalance(totalBalance);
+            // Use TOTAL portfolio value (USDT + all coins converted to USDT)
+            // NOT just free USDT — buying coins reduces USDT but not total value
+            const totalPortfolioValue = get().totalBalanceUSDT || (spotUSDT + futuresUSDT);
+            tradingSafetyService.setStartingBalance(totalPortfolioValue);
             const safetyCheck = await tradingSafetyService.canTrade(
                 get().userId, 0, recentStats,
-                { balance: totalBalance, activePositionCount: positionManager.getActivePositionCount() }
+                { balance: totalPortfolioValue, activePositionCount: positionManager.getActivePositionCount() }
             );
             if (!safetyCheck.allowed) {
                 get().addBotLog(`Safety: ${safetyCheck.reason}`, 'warning');
