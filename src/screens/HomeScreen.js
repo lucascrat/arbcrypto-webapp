@@ -43,6 +43,7 @@ export default function HomeScreen({ navigation }) {
         error,
         clearError,
         isLoading,
+        prices,
     } = useAppStore();
 
     const [refreshing, setRefreshing] = useState(false);
@@ -164,16 +165,25 @@ export default function HomeScreen({ navigation }) {
             </View>
 
             <View style={styles.assetsRow}>
-                {(balance || []).slice(0, 3).map(b => {
-                    const total = Number(b.total || 0);
-                    return (
-                        <View key={b.asset} style={styles.assetChip}>
+                {(balance || [])
+                    .map(b => {
+                        const total = Number(b.total || 0);
+                        const price = b.asset === 'USDT' ? 1 : (prices?.[`${b.asset}USDT`] || 0);
+                        const valueUSD = total * price;
+                        return { ...b, total, valueUSD };
+                    })
+                    .filter(b => b.valueUSD >= 0.01)
+                    .sort((a, b) => b.valueUSD - a.valueUSD)
+                    .map(b => (
+                        <View key={b.asset} style={[styles.assetChip, b.valueUSD >= 5 && styles.assetChipHighlight]}>
                             <Text style={styles.assetChipText}>
-                                {b.asset}: {total < 1 ? total.toFixed(4) : total.toFixed(2)}
+                                {b.asset}: {b.total < 1 ? b.total.toFixed(4) : b.total.toFixed(2)}
+                            </Text>
+                            <Text style={styles.assetChipValue}>
+                                ${b.valueUSD.toFixed(2)}
                             </Text>
                         </View>
-                    );
-                })}
+                    ))}
             </View>
         </LinearGradient>
     );
@@ -715,8 +725,32 @@ const styles = StyleSheet.create({
     assetsRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 8,
-        marginTop: 4,
+        gap: 6,
+        marginTop: 8,
+    },
+    assetChip: {
+        backgroundColor: 'rgba(255,255,255,0.08)',
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 6,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    assetChipHighlight: {
+        backgroundColor: COLORS.accent + '20',
+        borderWidth: 1,
+        borderColor: COLORS.accent + '40',
+    },
+    assetChipText: {
+        color: COLORS.textSecondary,
+        fontSize: 11,
+        fontWeight: '600',
+    },
+    assetChipValue: {
+        color: COLORS.accent,
+        fontSize: 10,
+        fontWeight: 'bold',
     },
     subtitleRow: {
         flexDirection: 'row',
