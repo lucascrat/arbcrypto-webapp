@@ -194,13 +194,25 @@ export const useAppStore = create((set, get) => ({
             console.error('[Bot] WebSocket error:', e);
         }
 
-        // Restore positions from DB + sync with Binance
+        // Restore positions from DB + sync with Binance + discover untracked coins
         try {
             const restored = await positionManager.restorePositions();
             if (restored && restored.length > 0) {
                 get().addBotLog(`📦 ${restored.length} posição(ões) restaurada(s) do banco`, 'success');
             }
             await positionManager.syncWithBinance();
+
+            // Discover coins in wallet that have no registered position
+            const riskConfig = RISK_LEVELS[get().riskLevel || 'medium'];
+            const discovered = await positionManager.discoverUntracked(riskConfig);
+            if (discovered && discovered.length > 0) {
+                get().addBotLog(`🔍 ${discovered.length} moeda(s) descoberta(s) na carteira — agora com SL/TP`, 'success');
+            }
+
+            const activeCount = positionManager.getActivePositionCount();
+            if (activeCount > 0) {
+                get().addBotLog(`📊 Total: ${activeCount} posição(ões) ativa(s) sendo monitorada(s)`, 'info');
+            }
         } catch (e) {
             get().addBotLog(`⚠️ Erro ao restaurar posições: ${e.message}`, 'warning');
         }
@@ -305,6 +317,15 @@ export const useAppStore = create((set, get) => ({
                 await positionManager.syncWithBinance();
             } catch (e) {
                 console.warn('[Bot] syncWithBinance failed:', e.message);
+            }
+
+            // Log portfolio status
+            const activePositions = positionManager.getActivePositionCount();
+            const totalPortfolio = get().totalBalanceUSDT || (spotUSDT + futuresUSDT);
+            if (activePositions > 0) {
+                const positions = positionManager.getAllPositions();
+                const posSymbols = positions.map(p => p.symbol.replace('USDT', '')).join(', ');
+                get().addBotLog(`💼 Portfolio: $${totalPortfolio.toFixed(2)} | USDT: $${spotUSDT.toFixed(2)} | ${activePositions} pos: ${posSymbols}`, 'info');
             }
 
             // 2. Get risk level config
@@ -560,7 +581,8 @@ export const useAppStore = create((set, get) => ({
                 } else {
                     // SPOT — only LONG
                     if (spotUSDT < 5) {
-                        get().addBotLog('Saldo Spot insuficiente.', 'warning');
+                        const activePos = positionManager.getActivePositionCount();
+                        get().addBotLog(`Saldo USDT baixo ($${spotUSDT.toFixed(2)}), sem novo trade SPOT. ${activePos} posição(ões) ativa(s) sendo gerenciada(s).`, 'warning');
                         set({ botStatus: 'waiting' });
                         botCycleRunning = false;
                         return;

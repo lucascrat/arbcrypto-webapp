@@ -1,5 +1,5 @@
 import { binanceService } from './binance';
-import { openPositionsService } from './data';
+import { openPositionsService, tradesService } from './data';
 
 /**
  * Position Manager — Stop-Loss, Take-Profit, Trailing Stop (ATR-based), Partial Exits
@@ -134,6 +134,104 @@ class PositionManagerService {
             }
         } catch (e) {
             this.log(`Erro sync Binance: ${e.message}`, 'error');
+        }
+    }
+
+    /**
+     * Descobre moedas na carteira Binance que nao tem posicao registrada.
+     * Cria posicoes automaticas com SL/TP para gerenciamento.
+     * @param {object} riskConfig — risk level config (RISK_LEVELS[level])
+     */
+    async discoverUntracked(riskConfig) {
+        try {
+            const balances = await binanceService.getBalance();
+            if (!balances || balances.length === 0) return [];
+
+            // Ignorar stablecoins e dust
+            const IGNORE_ASSETS = ['USDT', 'USDC', 'BUSD', 'BNB', 'FDUSD', 'TUSD'];
+            const discovered = [];
+
+            for (const b of balances) {
+                if (IGNORE_ASSETS.includes(b.asset)) continue;
+                if (b.total <= 0) continue;
+
+                const symbol = `${b.asset}USDT`;
+
+                // Ja tem posicao registrada → pula
+                if (this.positions.has(symbol)) continue;
+
+                // Busca preco atual para calcular valor em USDT
+                let currentPrice;
+                try {
+                    currentPrice = await binanceService.getPrice(symbol);
+                } catch (e) {
+                    // Par nao existe na Binance (ex: moeda delisted)
+                    continue;
+                }
+
+                const valueUSDT = b.total * currentPrice;
+
+                // Ignorar dust (menos de $1)
+                if (valueUSDT < 1) continue;
+
+                // Busca preco medio de compra do historico
+                let entryPrice;
+                try {
+                    const avgPrice = await tradesService.getAvgBuyPrice(symbol);
+                    entryPrice = avgPrice > 0 ? avgPrice : currentPrice;
+                } catch (e) {
+                    entryPrice = currentPrice;
+                }
+
+                // Calcula SL/TP baseado no riskConfig
+                const slPct = riskConfig?.stopLossPercent || 2.0;
+                const tpPct = riskConfig?.takeProfitPercent || 3.5;
+                const trailingPct = riskConfig?.trailingStopPercent || 1.5;
+
+                const slPrice = entryPrice * (1 - slPct / 100);
+                const tpPrice = entryPrice * (1 + tpPct / 100);
+
+                const position = {
+                    symbol,
+                    direction: 'LONG',
+                    quantity: b.total,
+                    originalQuantity: b.total,
+                    entryPrice,
+                    stopLoss: slPrice,
+                    takeProfit: tpPrice,
+                    tp1Price: null,
+                    breakEvenPrice: null,
+                    venue: 'SPOT',
+                    trailingStop: true,
+                    trailingPercent: trailingPct,
+                    trailingDistance: null,
+                    peakPrice: Math.max(entryPrice, currentPrice),
+                    openedAt: Date.now(),
+                    partialExitDone: false,
+                    breakEvenActivated: false,
+                    atr: null,
+                };
+
+                this.positions.set(symbol, position);
+                await this._savePositionToDB(position).catch(() => {});
+
+                const pnlPct = ((currentPrice - entryPrice) / entryPrice * 100).toFixed(2);
+                this.log(
+                    `DISCOVERED: ${b.asset} = ${b.total} ($${valueUSDT.toFixed(2)}) | Entry: $${entryPrice.toFixed(4)} | Now: $${currentPrice.toFixed(4)} (${pnlPct}%) | SL: $${slPrice.toFixed(4)} | TP: $${tpPrice.toFixed(4)}`,
+                    'success'
+                );
+                discovered.push({ symbol, quantity: b.total, valueUSDT, entryPrice, currentPrice });
+            }
+
+            if (discovered.length > 0) {
+                const totalValue = discovered.reduce((sum, d) => sum + d.valueUSDT, 0);
+                this.log(`Portfolio discovery: ${discovered.length} moeda(s) encontrada(s), total $${totalValue.toFixed(2)}`, 'success');
+            }
+
+            return discovered;
+        } catch (e) {
+            this.log(`Erro no portfolio discovery: ${e.message}`, 'error');
+            return [];
         }
     }
 
